@@ -3,59 +3,50 @@ import pandas as pd
 import os
 import tensorflow as tf
 import tensorflow.keras as keras
-from keras import Model
-from keras.applications.densenet import DenseNet121
-from keras.applications import vgg16
-from keras.preprocessing import image
-from keras.applications.densenet import preprocess_input, decode_predictions
-from keras.layers import GlobalMaxPooling2D
-import matplotlib.pyplot as plt
-import matplotlib.image as mpimg
-import cv2
-import pathlib
 from sklearn.metrics.pairwise import linear_kernel
+from flask import Flask, request, jsonify
 import re
 from sklearn.metrics.pairwise import cosine_similarity
 import difflib
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import linear_kernel
 
+# READ DATASET
+styles_df = pd.read_csv("./data.csv", nrows=10000, on_bad_lines='skip')
 
-styles_df = pd.read_csv("wokehh.csv", nrows=6000, error_bad_lines=False) # Read 6000 product and drop bad lines
-styles_df['image'] = styles_df.apply(lambda x: str(x['id']) + ".jpg", axis=1) # Make image column contains (id.jpg)
-print(styles_df.shape)
-styles_df.head(5)
-
+# PREPROCESS
+styles_df['image'] = styles_df.apply(lambda x: str(x['id']) + ".jpg", axis=1)
+join=['gender','subCategory','articleType','baseColour','productDisplayName']
 styles_df['final'] =styles_df[join].apply(lambda row: "".join(row.values.astype(str)), axis=1)
 styles_df['final']= [re.sub(r'\s',' ', str(x)) for x in styles_df['final']]
-styles_df.head()
-
-
 dict = {}
 for i in list(styles_df.columns):
     dict[i] = styles_df[i].value_counts().shape[0]
 
-print(pd.DataFrame(dict,index = ["Unique counts"]).transpose())
-
 temp = styles_df.isnull().sum()
 uniq = pd.DataFrame({'Columns': temp.index, 'Missing values': temp.values})
-uniq
+from sklearn.feature_extraction.text import TfidfVectorizer
+tfidf = TfidfVectorizer(stop_words='english')
+styles_df['final'] = styles_df['final'].fillna('')
+tfidf_matrix = tfidf.fit_transform(styles_df['final'])
 
-from sklearn.metrics.pairwise import linear_kernel
+
+#compute the cosine similarity matrix
 cosine_sim = linear_kernel(tfidf_matrix,tfidf_matrix)
 
-
+#construct a reverse map if indices and movie titles
 indices = pd.Series(styles_df.index, index = styles_df['productDisplayName']).drop_duplicates()
 
 vectorizer = TfidfVectorizer()
 X_new = vectorizer.fit_transform([x.lower() for x in styles_df['final']])
 
+app = Flask(__name__)
 
 
 def search_engine(word, limit=9):
-    word = re.sub('[^a-zA-Z0-9 ]','', word.lower()) # match everyting that's not alphabet and digit and remove it
-    #word = re.sub(r'\s','', word.lower())
+    word = re.sub('[^a-zA-Z0-9 ]','', word.lower())
     query_vec = vectorizer.transform([word])
     similarity = cosine_similarity(query_vec, X_new).flatten()
-
     filtered = np.where(similarity != 0)[0]
     indices = np.argsort(-similarity[filtered])
     correct_indices = filtered[indices]
@@ -65,7 +56,22 @@ def search_engine(word, limit=9):
 
     if not len(result):
         return 'result not found'
-    overall =  result['similarity_score'] *  similarity[correct_indices]
-    return result.loc[overall.sort_values(ascending=False).index].head(limit)
 
-    search_engine('black')
+    overall =  result['similarity_score'] *  similarity[correct_indices]
+
+    return result.loc[overall.sort_values(ascending=True).index].head(limit)
+
+
+@app.route('/search', methods=['GET'])
+def search():
+    word = request.args.get('word', '')
+    limit = int(request.args.get('limit', 9))
+    result = search_engine(word, limit)
+    if isinstance(result, str):
+        return jsonify({'error': result})
+    result_json = result.to_json(orient='records', default_handler=str)
+
+    return result_json
+
+if __name__ == '__main__':
+    app.run(debug=True)
